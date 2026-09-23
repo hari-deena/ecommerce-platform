@@ -1,8 +1,9 @@
 import uuid
+from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.common.enums import UserRole
+from app.common.enums import RoleName
 from app.common.schemas import IDTimestampSchema
 
 
@@ -36,31 +37,43 @@ class AddressRead(AddressBase, IDTimestampSchema):
     user_id: uuid.UUID
 
 
-class UserRead(IDTimestampSchema):
-    name: str
-    email: EmailStr
+class CustomerRead(IDTimestampSchema):
+    user_id: uuid.UUID
+    full_name: str
     phone: str | None
-    role: UserRole
+
+
+class UserRead(IDTimestampSchema):
+    email: EmailStr
     is_active: bool
+    role: RoleName
+    customer: CustomerRead | None = None
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _role_name(cls, value: Any) -> str:
+        """`user.role` is a `Role` ORM object (via the `role_id` FK), not a plain string."""
+        return getattr(value, "name", value)
 
 
 class UserProfileUpdate(BaseModel):
-    """Self-service profile update — cannot change role/is_active/email verification here."""
+    """Self-service profile update — operates on the linked `Customer` row,
+    not `User` itself (which only holds auth identity + role)."""
 
-    name: str | None = None
+    full_name: str | None = None
     phone: str | None = None
 
 
 class AdminUserCreate(BaseModel):
-    name: str
     email: EmailStr
-    phone: str | None = None
     password: str = Field(min_length=8)
-    role: UserRole = UserRole.CUSTOMER
+    full_name: str
+    phone: str | None = None
+    role: RoleName = RoleName.USER
 
 
 class AdminUserUpdate(BaseModel):
-    name: str | None = None
+    full_name: str | None = None
     phone: str | None = None
-    role: UserRole | None = None
     is_active: bool | None = None
+    role: RoleName | None = None

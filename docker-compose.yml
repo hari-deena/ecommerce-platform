@@ -13,7 +13,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Postgres 18's official image changed its expected layout: it now wants
+      # ONE mount at /var/lib/postgresql (it manages a versioned subdirectory
+      # itself) rather than a mount directly at .../data — mounting at .../data
+      # makes the entrypoint refuse to start ("unused mount/volume" error).
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ecommerce}"]
       interval: 5s
@@ -41,7 +45,11 @@ services:
     container_name: ecommerce_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Host-side port only — bumped off the default 6379 because another
+      # container on this machine already holds it. Containers still reach
+      # Redis on its normal internal port via the `redis` hostname (see
+      # backend's REDIS_URL below), so nothing else needs to change.
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -69,10 +77,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      sh -c "alembic upgrade head &&
-             gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker
-             --bind 0.0.0.0:8000 --access-logfile - --error-logfile -"
+    # Single-line on purpose: a YAML folded (`>`) scalar with visually-indented
+    # continuation lines does NOT fold those lines into spaces (YAML preserves
+    # literal newlines for "more indented" content). That silently split this
+    # into multiple shell commands and dropped `--bind`, `--access-logfile` etc,
+    # leaving gunicorn on its default 127.0.0.1:8000 — unreachable from outside
+    # the container despite the published port.
+    command: sh -c "alembic upgrade head && gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --no-control-socket --access-logfile - --error-logfile -"
 
 volumes:
   postgres_data:

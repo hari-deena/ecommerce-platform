@@ -2,8 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.v1.deps import get_current_active_user
-from app.common.crud_router import build_crud_router
+from app.api.v1.deps import get_current_active_user, require_admin
 from app.core.exceptions import ForbiddenError
 from app.features.users.dependencies import get_address_service, get_user_service
 from app.features.users.models import Address, User
@@ -78,16 +77,48 @@ async def delete_my_address(
 
 
 # Admin: full user management (PG-A002) — list/create/update/deactivate users.
-admin_router = build_crud_router(
-    service_dependency=get_user_service,
-    create_schema=AdminUserCreate,
-    update_schema=AdminUserUpdate,
-    read_schema=UserRead,
-    prefix="/admin/users",
-    tags=["admin:users"],
-    require_admin_read=True,
-    require_admin_write=True,
+# Bespoke (not `build_crud_router`) because a single "user" spans two tables
+# (users, customers) — see UserService.create/update.
+admin_router = APIRouter(
+    prefix="/admin/users", tags=["admin:users"], dependencies=[Depends(require_admin)]
 )
+
+
+@admin_router.get("/", response_model=list[UserRead])
+async def list_users(
+    skip: int = 0, limit: int = 50, service: UserService = Depends(get_user_service)
+) -> list[User]:
+    return await service.list_all(skip=skip, limit=limit)
+
+
+@admin_router.get("/{user_id}", response_model=UserRead)
+async def get_user(user_id: uuid.UUID, service: UserService = Depends(get_user_service)) -> User:
+    return await service.get_or_404(user_id)
+
+
+@admin_router.post("/", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    payload: AdminUserCreate, service: UserService = Depends(get_user_service)
+) -> User:
+    return await service.create(payload)
+
+
+@admin_router.patch("/{user_id}", response_model=UserRead)
+async def update_user(
+    user_id: uuid.UUID,
+    payload: AdminUserUpdate,
+    service: UserService = Depends(get_user_service),
+) -> User:
+    user = await service.get_or_404(user_id)
+    return await service.update(user, payload)
+
+
+@admin_router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_user(user_id: uuid.UUID, service: UserService = Depends(get_user_service)) -> None:
+    user = await service.get_or_404(user_id)
+    await service.delete(user)
+
+
 # NOTE: `admin_router` is exported separately (not nested under `router`, which
 # already carries the `/users` prefix) to avoid double-prefixing —
 # app/api/v1/router.py includes both directly.

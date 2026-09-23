@@ -3,8 +3,14 @@ from datetime import UTC, datetime
 
 import jwt
 
+from app.common.enums import RoleName
 from app.core.email import send_email
-from app.core.exceptions import AlreadyExistsError, UnauthorizedError, ValidationAppError
+from app.core.exceptions import (
+    AlreadyExistsError,
+    NotFoundError,
+    UnauthorizedError,
+    ValidationAppError,
+)
 from app.core.security import (
     TokenType,
     create_access_token,
@@ -17,43 +23,63 @@ from app.core.security import (
 from app.features.auth.repository import PasswordResetTokenRepository, RefreshTokenRepository
 from app.features.auth.schemas import RegisterRequest, TokenResponse
 from app.features.users.models import User
-from app.features.users.repository import UserRepository
+from app.features.users.repository import CustomerRepository, RoleRepository, UserRepository
 
 
 class AuthService:
     def __init__(
         self,
         user_repo: UserRepository,
+        customer_repo: CustomerRepository,
+        role_repo: RoleRepository,
         refresh_repo: RefreshTokenRepository,
         reset_repo: PasswordResetTokenRepository,
     ) -> None:
         self.user_repo = user_repo
+        self.customer_repo = customer_repo
+        self.role_repo = role_repo
         self.refresh_repo = refresh_repo
         self.reset_repo = reset_repo
 
     async def register(self, payload: RegisterRequest) -> User:
+        """FR-AUTH-001. Checks the email isn't already registered (409) before
+        inserting; the new user always gets the default `user` role — admin
+        accounts are created via `/admin/users`, never through public signup."""
         if await self.user_repo.get_by_email(payload.email):
             raise AlreadyExistsError("A user with this email already exists")
+
+        default_role = await self.role_repo.get_by_name(RoleName.USER.value)
+        if default_role is None:
+            raise NotFoundError(f"Role '{RoleName.USER.value}' is not seeded — run migrations")
+
         user = await self.user_repo.create(
             {
-                "name": payload.name,
                 "email": payload.email,
-                "phone": payload.phone,
-                "hashed_password": hash_password(payload.password),
+                "password_hash": hash_password(payload.password),
+                "role_id": default_role.id,
             }
         )
-        return user
+        await self.customer_repo.create(
+            {"user_id": user.id, "full_name": payload.full_name, "phone": payload.phone}
+        )
+        # Re-fetch so `.customer` reflects the row just created — it wasn't
+        # added through the `user.customer` relationship, so the in-memory
+        # object wouldn't otherwise see it.
+        created = await self.user_repo.get(user.id)
+        if created is None:
+            raise NotFoundError("User not found immediately after creation")
+        return created
 
     async def authenticate(self, email: str, password: str) -> User:
         user = await self.user_repo.get_by_email(email)
-        if user is None or not verify_password(password, user.hashed_password):
+        if user is None or not verify_password(password, user.password_hash):
             raise UnauthorizedError("Incorrect email or password")
         if not user.is_active:
             raise UnauthorizedError("This account has been deactivated")
         return user
 
     async def issue_tokens(self, user: User) -> TokenResponse:
-        access_token = create_access_token(user.id, role=user.role.value)
+        access_token = create_access_token(user.id, role=user.role.name)
         refresh_token = create_refresh_token(user.id)
         payload = decode_token(refresh_token)
         await self.refresh_repo.create(
@@ -135,6 +161,6 @@ class AuthService:
         if user is None:
             raise ValidationAppError("Invalid reset token")
 
-        await self.user_repo.update(user, {"hashed_password": hash_password(new_password)})
+        await self.user_repo.update(user, {"password_hash": hash_password(new_password)})
         await self.reset_repo.mark_used(stored)
         await self.refresh_repo.revoke_all_for_user(user.id)

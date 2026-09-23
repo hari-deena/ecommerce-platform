@@ -5,7 +5,7 @@ from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.common.enums import UserRole
+from app.common.enums import RoleName
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import TokenType, decode_token
 from app.db.session import get_db
@@ -40,7 +40,7 @@ async def get_current_active_user(user: User = Depends(get_current_user)) -> Use
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.role != UserRole.ADMIN:
+    if not user.has_role(RoleName.ADMIN):
         raise ForbiddenError("Admin privileges required")
     return user
 

@@ -11,8 +11,15 @@ class OrderRepository(BaseRepository[Order]):
     model = Order
 
     async def get(self, id: uuid.UUID) -> Order | None:
+        # populate_existing: `place_order` creates OrderItems via a separate
+        # repo after creating the Order, then re-fetches it here in the same
+        # request — see UserRepository._eager for why this matters when the
+        # object is already in the session's identity map.
         result = await self.session.execute(
-            select(Order).where(Order.id == id).options(selectinload(Order.items))
+            select(Order)
+            .where(Order.id == id)
+            .options(selectinload(Order.items))
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
